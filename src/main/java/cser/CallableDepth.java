@@ -1,5 +1,7 @@
 package cser;
 
+import com.beust.jcommander.JCommander;
+import com.beust.jcommander.Parameter;
 import htsjdk.samtools.*;
 import htsjdk.samtools.util.Interval;
 import htsjdk.tribble.AbstractFeatureReader;
@@ -11,6 +13,7 @@ import htsjdk.tribble.bed.BEDFeature;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.zip.GZIPOutputStream;
 
 public class CallableDepth {
@@ -151,8 +154,39 @@ public class CallableDepth {
         }
     }
 
+    static class ArgParser {
+        @Parameter(names = {"-h", "--help"}, help = true)
+        private boolean help;
+        @Parameter(names="-mapQ", description="Minimum mapping quality")
+        public int minimumMapScore = 20;
+        @Parameter(names="-baseQ", description="Minimum base quality")
+        public int minimumBaseQuality = 20;
+        @Parameter(names="-keepDupes", description="include duplicates in analysis")
+        public boolean keepDupes;
+        @Parameter(names={"-bed", "-l"}, description="BED file of intervals to analyze (ZERO-based coordinates)", required=true)
+        public String bedFile;
+        @Parameter(names={"-o", "-covFasta"}, description="Ouput as a \"coverage.fasta\" file (will output to stdout if no output specified)")
+        public String covFastaOut;
+        @Parameter(names={"-t", "-covTSV"}, description="Ouput as a tab-delimited text file")
+        public String covTabOut;
+        @Parameter(description = "bamFile")
+        public List<String> bamFiles = new ArrayList<String>();
+    }
+
     public static void main(String [] args) throws FileNotFoundException {
-        CallableDepth main = new CallableDepth(20, 20, false, args[0], args[1], null, null);
+        ArgParser ap = new ArgParser();
+        JCommander jc = new JCommander(ap);
+        jc.parse(args);
+        if (ap.help) {
+            jc.usage();
+            System.exit(0);
+        }
+        if (ap.bamFiles.size() != 1) {
+            throw new RuntimeException("Must provide exactly one bam file!");
+        }
+
+        CallableDepth main = new CallableDepth(ap.minimumMapScore, ap.minimumBaseQuality, ap.keepDupes,
+                ap.bamFiles.get(0), ap.bedFile, ap.covFastaOut, ap.covTabOut);
         main.analyze();
     }
 
