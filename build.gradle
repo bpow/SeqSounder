@@ -1,0 +1,20 @@
+apply plugin: 'java'
+
+project.ext.mainClassName = 'cser.CallableDepth'
+
+sourceCompatibility = 1.5
+version = '1.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile 'com.github.samtools:htsjdk:1.130'
+}
+
+jar {
+    from { configurations.compile.collect { it.isDirectory() ? it : zipTree(it) } }
+    manifest { attributes 'Main-Class': mainClassName }
+    destinationDir project.projectDir
+}
