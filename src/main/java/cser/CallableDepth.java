@@ -4,7 +4,6 @@ import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import htsjdk.samtools.*;
 import htsjdk.samtools.util.Interval;
-import htsjdk.samtools.util.RuntimeEOFException;
 import htsjdk.tribble.AbstractFeatureReader;
 import htsjdk.tribble.CloseableTribbleIterator;
 import htsjdk.tribble.FeatureReader;
@@ -76,7 +75,7 @@ public class CallableDepth {
 
         public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes,
                            String bamFileName, List<Interval> queryIntervals,
-                           String outCovFasta, String outCovTab) throws FileNotFoundException {
+                           String outCovFasta, String outCovTab) throws IOException {
             this.minimumMapScore = minimumMapScore;
             this.minimumBaseQuality = minimumBaseQuality;
             this.keepDupes = keepDupes;
@@ -87,23 +86,39 @@ public class CallableDepth {
             if (outCovTab == null) {
                 covTabOut = null;
                 if (outCovFasta == null) {
-                    covFastaOut = System.out; // have to have some output...
+                    // have to have some output...
+                    covFastaOut = new PrintStream(new BufferedOutputStream(System.out));
                 } else {
-                    covFastaOut = new PrintStream(outCovFasta);
+                    covFastaOut = openOutput(outCovFasta);
                 }
             } else {
-                covTabOut = new PrintStream(outCovTab);
-                covFastaOut = outCovFasta == null ? null : new PrintStream(outCovFasta);
+                covTabOut = openOutput(outCovTab);
+                covFastaOut = outCovFasta == null ? null : openOutput(outCovFasta);
             }
             reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
         }
 
-        private void flushPrior(int barrier) {
+        private int currCoverage = -1;
+        private Integer currCoverageStart = null;
+        private void flushPrior(int barrier, boolean finishRegion) {
             for (int i = flushed + 1; i < barrier; i++) {
                 Integer coverage = coverages.remove(i);
                 if (coverage == null) coverage = 0;
-                covTabOut.printf("%s\t%d\t%d\n", currContig, i, coverage);
-                flushed = i;
+                if (coverage != currCoverage) {
+                    if (currCoverageStart != null) {
+                        covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, i - 1, currCoverage);
+                    }
+                    currCoverage = coverage;
+                    currCoverageStart = i;
+                }
+            }
+            if (finishRegion) {
+                covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, barrier-1, currCoverage);
+                flushed = 0;
+                currCoverage = -1;
+                currCoverageStart = null;
+            } else {
+                flushed = barrier - 1;
             }
         }
 
@@ -116,9 +131,6 @@ public class CallableDepth {
             long duplicateReads = 0;
 
             for (SAMRecord rec : reader) {
-                if (rec.getContig() != currContig && currContig != null) {
-                    flushPrior(reader.getFileHeader().getSequence(currContig).getSequenceLength()+1);
-                }
                 if (rec.getMappingQuality() < minimumMapScore || rec.getReadFailsVendorQualityCheckFlag() || rec.getNotPrimaryAlignmentFlag() || rec.getReadUnmappedFlag()) {
                     continue;
                 }
@@ -130,6 +142,12 @@ public class CallableDepth {
                     duplicateReads++;
                     if (!keepDupes) continue;
                 }
+
+                if (rec.getContig() != currContig && currContig != null) {
+                    flushPrior(reader.getFileHeader().getSequence(currContig).getSequenceLength()+1, true);
+                }
+                currContig = rec.getContig();
+
                 byte[] baseQualities = rec.getBaseQualities();
                 for (int i = 0; i < rec.getReadLength(); i++) {
                     int refPos = rec.getReferencePositionAtReadPosition(i+1);  // htsjdk expects ONE-based read offset
@@ -138,8 +156,7 @@ public class CallableDepth {
                         if (baseQualities[i] >= minimumBaseQuality) coverages.put(refPos, coverages.getOrDefault(refPos, 0) + 1);
                     }
                 }
-                currContig = rec.getContig();
-                flushPrior(rec.getAlignmentStart());
+                flushPrior(rec.getAlignmentStart(), false);
 
             }
             try {
@@ -153,7 +170,6 @@ public class CallableDepth {
             if (covTabOut != null) {
                 covTabOut.close();
             }
-
         }
     }
 
@@ -182,11 +198,11 @@ public class CallableDepth {
         return sb.toString();
     }
 
-    public static PrintWriter openOutput(String filename) throws IOException {
+    public static PrintStream openOutput(String filename) throws IOException {
         if (filename.endsWith(".gz")) {
-            return new PrintWriter(new GZIPOutputStream(new FileOutputStream(filename)));
+            return new PrintStream(new GZIPOutputStream(new FileOutputStream(filename)));
         } else {
-            return new PrintWriter(filename);
+            return new PrintStream(new BufferedOutputStream(new FileOutputStream(filename)));
         }
     }
 
@@ -213,7 +229,7 @@ public class CallableDepth {
         }
 
         ArrayList<Interval> queryIntervals;
-        if (cd.region.isEmpty() && cd.bedFile == null) {
+        if ((cd.region == null || cd.region.isEmpty()) && cd.bedFile == null) {
             jc.usage();
             throw new IllegalArgumentException("Must provide one of '-r' or '-l'");
         }
