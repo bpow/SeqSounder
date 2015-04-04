@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.zip.GZIPOutputStream;
 
 public class CallableDepth {
+    private static final int COVERAGE_HISTOGRAM_MAX = 1000;
     @Parameter(names = {"-h", "--help"}, help = true)
     public boolean help;
     @Parameter(names="-mapQ", description="Minimum mapping quality")
@@ -66,6 +67,7 @@ public class CallableDepth {
         private final PrintStream covFastaOut;
 
         private final SamReader reader;
+        private final long[] coverageHistogram = new long[COVERAGE_HISTOGRAM_MAX+1];
 
         // maps position -> coverage
         HashMap<Integer, Integer> coverages = new HashMap<Integer, Integer>();
@@ -104,6 +106,11 @@ public class CallableDepth {
             for (int i = flushed + 1; i < barrier; i++) {
                 Integer coverage = coverages.remove(i);
                 if (coverage == null) coverage = 0;
+                if (coverage > COVERAGE_HISTOGRAM_MAX) {
+                    coverageHistogram[COVERAGE_HISTOGRAM_MAX]++;
+                } else {
+                    coverageHistogram[coverage]++;
+                }
                 if (coverage != currCoverage) {
                     if (currCoverageStart != null) {
                         covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, i - 1, currCoverage);
@@ -126,7 +133,7 @@ public class CallableDepth {
         public void run() {
 
             long totalReadsPaired = 0;
-            long totalPairedReadWithMappedMates = 0;
+            long totalPairedReadsWithMappedMates = 0;
             long totalAlignedBases = 0;
             long duplicateReads = 0;
 
@@ -136,7 +143,7 @@ public class CallableDepth {
                 }
                 if (rec.getReadPairedFlag()) {
                     totalReadsPaired++;
-                    if (!rec.getMateUnmappedFlag()) totalPairedReadWithMappedMates++;
+                    if (!rec.getMateUnmappedFlag()) totalPairedReadsWithMappedMates++;
                 }
                 if (rec.getDuplicateReadFlag()) {
                     duplicateReads++;
@@ -170,6 +177,27 @@ public class CallableDepth {
             if (covTabOut != null) {
                 covTabOut.close();
             }
+
+            PrintStream report = System.err;
+            report.printf("Total Reads Paired:\t%d\n", totalReadsPaired);
+            report.printf("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
+            report.printf("Duplicate Reads:\t%d\n", duplicateReads);
+            report.printf("Total aligned bases:\t%d\n", totalAlignedBases);
+            long hist_at_least[] = new long[coverageHistogram.length];
+            long cumulative = 0;
+            for (int i = COVERAGE_HISTOGRAM_MAX; i >= 0 ; i--) {
+                cumulative += coverageHistogram[i];
+                hist_at_least[i] = cumulative;
+            }
+            cumulative = 0;
+            report.println("#-----------------------------------------------------------------------------------------#");
+            report.println("Coverage\tCount\tCumulative Below\tCumulativeAbove");
+            for (int i = 0; i <= COVERAGE_HISTOGRAM_MAX; i++) {
+                cumulative += coverageHistogram[i];
+                report.printf("%d\t%d\t%d\t%d\n", i, coverageHistogram[i], cumulative, hist_at_least[i]);
+            }
+            report.println("#-----------------------------------------------------------------------------------------#");
+
         }
     }
 
