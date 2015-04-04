@@ -3,6 +3,7 @@ package cser;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import htsjdk.samtools.*;
+import htsjdk.samtools.util.BlockCompressedOutputStream;
 import htsjdk.samtools.util.Interval;
 import htsjdk.tribble.AbstractFeatureReader;
 import htsjdk.tribble.CloseableTribbleIterator;
@@ -27,34 +28,86 @@ public class CallableDepth {
     public int minimumBaseQuality = 20;
     @Parameter(names="-keepDupes", description="include duplicates in analysis")
     public boolean keepDupes;
+    @Parameter(names={"-z", "-compress"}, description="Compress output files while writing")
+    public boolean compressOutput;
     @Parameter(names={"-bed", "-l"}, description="BED file of intervals to analyze (ZERO-based coordinates)")
     public String bedFile = null;
     @Parameter(names={"-r", "-region"}, description="Regions to analyze (ONE-based), like \"1:32221-42212\", can be specified multiple times")
     public List<String> region;
-    @Parameter(names={"-o", "-covFasta"}, description="Ouput as a \"coverage.fasta\" file (will output to stdout if no output specified)")
-    public String covFasta = null;
-    @Parameter(names={"-t", "-covTab"}, description="Ouput as a tab-delimited text file")
-    public String covTab = null;
-    @Parameter(description = "bamFile")
+    @Parameter(names={"-f", "-covFasta"}, description="Generate a .covfasta file")
+    public boolean makeCovFasta;
+    @Parameter(names={"-t", "-covBedGraph"}, description="Generate a tab-delimited (bedGraph) coverage file")
+    public boolean makeCovBedGraph;
+    @Parameter(names={"-s", "-suffix"}, description="Additional suffix to add to output files")
+    public String suffix = "";
+    @Parameter(description = "bamFiles")
     public List<String> bamFiles = new ArrayList<String>();
 
-    public void analyze() throws IOException {
-        ArrayList<Interval> queryIntervals;
-
+    private ArrayList<Interval> setupIntervals() throws IOException {
+        ArrayList<Interval> inputIntervals;
         if (bedFile != null) {
-            queryIntervals = readIntervals(bedFile);
+            inputIntervals = readIntervals(bedFile);
         } else {
-            queryIntervals = new ArrayList<Interval>();
+            inputIntervals = new ArrayList<Interval>();
         }
         for (String r : region) {
-            queryIntervals.add(parseRegion(r));
+            inputIntervals.add(parseRegion(r));
         }
-        Collections.sort(queryIntervals);
+        if (inputIntervals.size() <= 1) return inputIntervals;
 
+        Collections.sort(inputIntervals);
 
-        DepthWorker worker = new DepthWorker(minimumMapScore, minimumBaseQuality, keepDupes, bamFiles.get(0),
-                queryIntervals, covFasta, covTab);
-        worker.run();
+        // Merge overlapping intervals
+        ArrayList<Interval> outIntervals = new ArrayList<Interval>(inputIntervals.size());
+        Interval activeInterval = outIntervals.get(0);
+        for (Interval next : outIntervals) {
+            if (activeInterval.abuts(next) || activeInterval.intersects(next)) {
+                activeInterval = new Interval(activeInterval.getContig(), activeInterval.getStart(), next.getEnd());
+                System.err.printf("WARNING: intervals overlap, coalescing:\n\t%s\n\t%s\n", activeInterval, next);
+            } else {
+                outIntervals.add(activeInterval);
+                activeInterval = next;
+            }
+        }
+        outIntervals.add(activeInterval);
+
+        return outIntervals;
+    }
+
+    public void analyze() throws IOException {
+        ArrayList<Interval> queryIntervals = setupIntervals();
+
+        for (String bamFile : bamFiles) {
+            PrintStream fasta = null;
+            PrintStream bedGraph = null;
+
+            String prefix = bamFile;
+            if (prefix.endsWith(".bam") || prefix.endsWith(".BAM")) {
+                prefix = prefix.substring(0, prefix.length()-4);
+            }
+            prefix += suffix;
+
+            if (makeCovFasta) {
+                if (compressOutput) {
+                    fasta = new PrintStream(new BlockCompressedOutputStream(prefix + ".covfasta.gz"));
+                } else {
+                    fasta = new PrintStream(new BufferedOutputStream(new FileOutputStream(prefix + ".covfasta")));
+                }
+            }
+            if (makeCovBedGraph) {
+                if (compressOutput) {
+                    bedGraph = new PrintStream(new BlockCompressedOutputStream(prefix + ".bedgraph.gz"));
+                } else {
+                    bedGraph = new PrintStream(new BufferedOutputStream(new FileOutputStream(prefix + ".bedgraph")));
+                }
+            }
+
+            PrintStream report = new PrintStream(new File(prefix + ".report"));
+
+            DepthWorker worker = new DepthWorker(minimumMapScore, minimumBaseQuality, keepDupes, bamFile,
+                    queryIntervals, fasta, bedGraph, report);
+            worker.run();
+        }
     }
 
     public class DepthWorker implements Runnable {
@@ -65,6 +118,7 @@ public class CallableDepth {
         private final List<Interval> queryIntervals;
         private final PrintStream covTabOut;
         private final PrintStream covFastaOut;
+        private final PrintStream reportOut;
 
         private final SamReader reader;
         private final long[] coverageHistogram = new long[COVERAGE_HISTOGRAM_MAX+1];
@@ -77,26 +131,17 @@ public class CallableDepth {
 
         public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes,
                            String bamFileName, List<Interval> queryIntervals,
-                           String outCovFasta, String outCovTab) throws IOException {
+                           PrintStream covFastaOut, PrintStream covTabOut, PrintStream reportOut) throws IOException {
             this.minimumMapScore = minimumMapScore;
             this.minimumBaseQuality = minimumBaseQuality;
             this.keepDupes = keepDupes;
             this.bamFileName = bamFileName;
             this.queryIntervals = queryIntervals; // to be really safe, could copy...
 
-            // setup outputs
-            if (outCovTab == null) {
-                covTabOut = null;
-                if (outCovFasta == null) {
-                    // have to have some output...
-                    covFastaOut = new PrintStream(new BufferedOutputStream(System.out));
-                } else {
-                    covFastaOut = openOutput(outCovFasta);
-                }
-            } else {
-                covTabOut = openOutput(outCovTab);
-                covFastaOut = outCovFasta == null ? null : openOutput(outCovFasta);
-            }
+            this.covFastaOut = covFastaOut;
+            this.covTabOut = covTabOut;
+            this.reportOut = reportOut;
+
             reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
         }
 
@@ -150,7 +195,7 @@ public class CallableDepth {
                     if (!keepDupes) continue;
                 }
 
-                if (rec.getContig() != currContig && currContig != null) {
+                if (!rec.getContig().equals(currContig) && currContig != null) {
                     flushPrior(reader.getFileHeader().getSequence(currContig).getSequenceLength()+1, true);
                 }
                 currContig = rec.getContig();
@@ -178,11 +223,10 @@ public class CallableDepth {
                 covTabOut.close();
             }
 
-            PrintStream report = System.err;
-            report.printf("Total Reads Paired:\t%d\n", totalReadsPaired);
-            report.printf("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
-            report.printf("Duplicate Reads:\t%d\n", duplicateReads);
-            report.printf("Total aligned bases:\t%d\n", totalAlignedBases);
+            reportOut.printf("Total Reads Paired:\t%d\n", totalReadsPaired);
+            reportOut.printf("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
+            reportOut.printf("Duplicate Reads:\t%d\n", duplicateReads);
+            reportOut.printf("Total aligned bases:\t%d\n", totalAlignedBases);
             long hist_at_least[] = new long[coverageHistogram.length];
             long cumulative = 0;
             for (int i = COVERAGE_HISTOGRAM_MAX; i >= 0 ; i--) {
@@ -190,14 +234,14 @@ public class CallableDepth {
                 hist_at_least[i] = cumulative;
             }
             cumulative = 0;
-            report.println("#-----------------------------------------------------------------------------------------#");
-            report.println("Coverage\tCount\tCumulative Below\tCumulativeAbove");
+            reportOut.println("#-----------------------------------------------------------------------------------------#");
+            reportOut.println("Coverage\tCount\tCumulative Below\tCumulativeAbove");
             for (int i = 0; i <= COVERAGE_HISTOGRAM_MAX; i++) {
                 cumulative += coverageHistogram[i];
-                report.printf("%d\t%d\t%d\t%d\n", i, coverageHistogram[i], cumulative, hist_at_least[i]);
+                reportOut.printf("%d\t%d\t%d\t%d\n", i, coverageHistogram[i], cumulative, hist_at_least[i]);
             }
-            report.println("#-----------------------------------------------------------------------------------------#");
-
+            reportOut.println("#-----------------------------------------------------------------------------------------#");
+            reportOut.close();
         }
     }
 
@@ -256,10 +300,13 @@ public class CallableDepth {
             throw new IllegalArgumentException("Must provide exactly one bam file!");
         }
 
-        ArrayList<Interval> queryIntervals;
         if ((cd.region == null || cd.region.isEmpty()) && cd.bedFile == null) {
             jc.usage();
             throw new IllegalArgumentException("Must provide one of '-r' or '-l'");
+        }
+
+        if (!cd.suffix.isEmpty() && !cd.suffix.startsWith(".")) {
+            cd.suffix = "." + cd.suffix;
         }
 
         cd.analyze();
