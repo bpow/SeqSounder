@@ -156,16 +156,24 @@ public class CallableDepth {
                 } else {
                     coverageHistogram[coverage]++;
                 }
+                if (covFastaOut != null) {
+                    covFastaOut.print(i % 100 == 1 ? "\n" : " ");
+                    covFastaOut.print(coverage);
+                }
                 if (coverage != currCoverage) {
                     if (currCoverageStart != null) {
-                        covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, i - 1, currCoverage);
+                        if (covTabOut != null)
+                            covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, i - 1, currCoverage);
                     }
                     currCoverage = coverage;
                     currCoverageStart = i;
                 }
             }
             if (finishRegion) {
-                covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, barrier-1, currCoverage);
+                if (covTabOut != null)
+                    covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, barrier-1, currCoverage);
+                if (covFastaOut != null)
+                    covFastaOut.print("\n");
                 flushed = 0;
                 currCoverage = -1;
                 currCoverageStart = null;
@@ -195,8 +203,11 @@ public class CallableDepth {
                     if (!keepDupes) continue;
                 }
 
-                if (!rec.getContig().equals(currContig) && currContig != null) {
-                    flushPrior(reader.getFileHeader().getSequence(currContig).getSequenceLength()+1, true);
+                if (!rec.getContig().equals(currContig)) {
+                    if (currContig != null)
+                        flushPrior(reader.getFileHeader().getSequence(currContig).getSequenceLength()+1, true);
+                    if (covFastaOut != null)
+                        covFastaOut.printf(">%s", rec.getContig());
                 }
                 currContig = rec.getContig();
 
@@ -223,6 +234,7 @@ public class CallableDepth {
                 covTabOut.close();
             }
 
+            //----------------------------   Write report
             reportOut.printf("Total Reads Paired:\t%d\n", totalReadsPaired);
             reportOut.printf("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
             reportOut.printf("Duplicate Reads:\t%d\n", duplicateReads);
