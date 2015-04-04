@@ -53,6 +53,7 @@ public class CallableDepth {
         for (String r : region) {
             inputIntervals.add(parseRegion(r));
         }
+
         if (inputIntervals.size() <= 1) return inputIntervals;
 
         Collections.sort(inputIntervals);
@@ -75,7 +76,7 @@ public class CallableDepth {
     }
 
     public void analyze() throws IOException {
-        ArrayList<Interval> queryIntervals = setupIntervals();
+        ArrayList<Interval> intervals = setupIntervals();
 
         for (String bamFile : bamFiles) {
             PrintStream fasta = null;
@@ -105,7 +106,7 @@ public class CallableDepth {
             PrintStream report = new PrintStream(new File(prefix + ".report"));
 
             DepthWorker worker = new DepthWorker(minimumMapScore, minimumBaseQuality, keepDupes, bamFile,
-                    queryIntervals, fasta, bedGraph, report);
+                    intervals, fasta, bedGraph, report);
             worker.run();
         }
     }
@@ -115,7 +116,7 @@ public class CallableDepth {
         private final int minimumBaseQuality;
         private final boolean keepDupes;
         private final String bamFileName;
-        private final List<Interval> queryIntervals;
+        private final List<Interval> intervalsOfInterest;
         private final PrintStream covTabOut;
         private final PrintStream covFastaOut;
         private final PrintStream reportOut;
@@ -125,30 +126,40 @@ public class CallableDepth {
 
         // maps position -> coverage
         HashMap<Integer, Integer> coverages = new HashMap<Integer, Integer>();
-        String currContig = null;
-        int flushed = 0;
 
 
         public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes,
-                           String bamFileName, List<Interval> queryIntervals,
+                           String bamFileName, List<Interval> intervalsOfInterest,
                            PrintStream covFastaOut, PrintStream covTabOut, PrintStream reportOut) throws IOException {
             this.minimumMapScore = minimumMapScore;
             this.minimumBaseQuality = minimumBaseQuality;
             this.keepDupes = keepDupes;
             this.bamFileName = bamFileName;
-            this.queryIntervals = queryIntervals; // to be really safe, could copy...
 
             this.covFastaOut = covFastaOut;
             this.covTabOut = covTabOut;
             this.reportOut = reportOut;
 
             reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
+            if (intervalsOfInterest.isEmpty()) {
+                intervalsOfInterest = wholeGenomeIntervalsForBamFile(reader);
+            }
+            this.intervalsOfInterest = intervalsOfInterest; // to be really safe, could copy...
         }
 
+        private List<Interval> wholeGenomeIntervalsForBamFile(SamReader reader) {
+            ArrayList<Interval> intervals = new ArrayList<Interval>();
+            for (SAMSequenceRecord seq : reader.getFileHeader().getSequenceDictionary().getSequences()) {
+                intervals.add(new Interval(seq.getSequenceName(), 1, seq.getSequenceLength()));
+            }
+            return intervals;
+        }
+
+        // if this were not java, would closure these currCoverage and currCoverage start into here
         private int currCoverage = -1;
         private Integer currCoverageStart = null;
-        private void flushPrior(int barrier, boolean finishRegion) {
-            for (int i = flushed + 1; i < barrier; i++) {
+        private int flushPrior(int alreadyFlushed, int barrier, Interval region) {
+            for (int i = alreadyFlushed + 1; i < barrier; i++) {
                 Integer coverage = coverages.remove(i);
                 if (coverage == null) coverage = 0;
                 if (coverage > COVERAGE_HISTOGRAM_MAX) {
@@ -157,29 +168,30 @@ public class CallableDepth {
                     coverageHistogram[coverage]++;
                 }
                 if (covFastaOut != null) {
-                    covFastaOut.print(i % 100 == 1 ? "\n" : " ");
+                    covFastaOut.print((i-region.getStart()) % 100 == 0 ? "\n" : " ");
                     covFastaOut.print(coverage);
                 }
                 if (coverage != currCoverage) {
                     if (currCoverageStart != null) {
                         if (covTabOut != null)
-                            covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, i - 1, currCoverage);
+                            covTabOut.printf("%s\t%d\t%d\t%d\n", region.getContig(), currCoverageStart-1, i - 1, currCoverage);
                     }
                     currCoverage = coverage;
                     currCoverageStart = i;
                 }
             }
-            if (finishRegion) {
+            if (barrier >= region.getEnd() + 1) { // finishing region
                 if (covTabOut != null)
-                    covTabOut.printf("%s\t%d\t%d\t%d\n", currContig, currCoverageStart-1, barrier-1, currCoverage);
+                    covTabOut.printf("%s\t%d\t%d\t%d\n", region.getContig(), currCoverageStart-1, barrier-1, currCoverage);
                 if (covFastaOut != null)
                     covFastaOut.print("\n");
-                flushed = 0;
+                alreadyFlushed = -1;
                 currCoverage = -1;
                 currCoverageStart = null;
             } else {
-                flushed = barrier - 1;
+                alreadyFlushed = barrier - 1;
             }
+            return alreadyFlushed;
         }
 
         @Override
@@ -190,37 +202,37 @@ public class CallableDepth {
             long totalAlignedBases = 0;
             long duplicateReads = 0;
 
-            for (SAMRecord rec : reader) {
-                if (rec.getMappingQuality() < minimumMapScore || rec.getReadFailsVendorQualityCheckFlag() || rec.getNotPrimaryAlignmentFlag() || rec.getReadUnmappedFlag()) {
-                    continue;
-                }
-                if (rec.getReadPairedFlag()) {
-                    totalReadsPaired++;
-                    if (!rec.getMateUnmappedFlag()) totalPairedReadsWithMappedMates++;
-                }
-                if (rec.getDuplicateReadFlag()) {
-                    duplicateReads++;
-                    if (!keepDupes) continue;
-                }
-
-                if (!rec.getContig().equals(currContig)) {
-                    if (currContig != null)
-                        flushPrior(reader.getFileHeader().getSequence(currContig).getSequenceLength()+1, true);
-                    if (covFastaOut != null)
-                        covFastaOut.printf(">%s", rec.getContig());
-                }
-                currContig = rec.getContig();
-
-                byte[] baseQualities = rec.getBaseQualities();
-                for (int i = 0; i < rec.getReadLength(); i++) {
-                    int refPos = rec.getReferencePositionAtReadPosition(i+1);  // htsjdk expects ONE-based read offset
-                    if (refPos > 0) { // 0 is used for 'no corresponding position', e.g. insertion
-                        totalAlignedBases++;
-                        if (baseQualities[i] >= minimumBaseQuality) coverages.put(refPos, coverages.getOrDefault(refPos, 0) + 1);
+            for (Interval interval : intervalsOfInterest) {
+                SAMRecordIterator query = reader.query(interval.getContig(), interval.getStart(), interval.getEnd(), false);
+                if (covFastaOut != null)
+                    covFastaOut.printf(">%s:%d-%d", interval.getContig(), interval.getStart(), interval.getEnd());
+                int flushed = interval.getStart()-1;
+                while (query.hasNext()) {
+                    SAMRecord rec = query.next();
+                    if (rec.getMappingQuality() < minimumMapScore || rec.getReadFailsVendorQualityCheckFlag() || rec.getNotPrimaryAlignmentFlag() || rec.getReadUnmappedFlag()) {
+                        continue;
                     }
-                }
-                flushPrior(rec.getAlignmentStart(), false);
+                    if (rec.getReadPairedFlag()) {
+                        totalReadsPaired++;
+                        if (!rec.getMateUnmappedFlag()) totalPairedReadsWithMappedMates++;
+                    }
+                    if (rec.getDuplicateReadFlag()) {
+                        duplicateReads++;
+                        if (!keepDupes) continue;
+                    }
 
+                    byte[] baseQualities = rec.getBaseQualities();
+                    for (int i = 0; i < rec.getReadLength(); i++) {
+                        int refPos = rec.getReferencePositionAtReadPosition(i+1);  // htsjdk expects ONE-based read offset
+                        if (refPos > 0) { // 0 is used for 'no corresponding position', e.g. insertion
+                            totalAlignedBases++;
+                            if (baseQualities[i] >= minimumBaseQuality) coverages.put(refPos, coverages.getOrDefault(refPos, 0) + 1);
+                        }
+                    }
+                    flushed = flushPrior(flushed, rec.getAlignmentStart(), interval);
+                }
+                flushed = flushPrior(flushed, interval.getEnd()+1, interval);
+                query.close();
             }
             try {
                 reader.close();
