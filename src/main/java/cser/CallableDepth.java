@@ -21,18 +21,18 @@ public class CallableDepth {
     private final int minimumBaseQuality;
     private final boolean keepDupes;
     private final String bamFileName;
-    private final String bedFileName;
+    private final List<Interval> queryIntervals;
     private final PrintStream covFastaOut;
     private final PrintStream covTabOut;
 
     public CallableDepth(int minimumMapScore, int minimumBaseQuality, boolean keepDupes,
-                         String bamFileName, String bedFileName,
+                         String bamFileName, List<Interval> queryIntervals,
                          String outCovFasta, String outCovTab) throws FileNotFoundException {
         this.minimumMapScore = minimumMapScore;
         this.minimumBaseQuality = minimumBaseQuality;
         this.keepDupes = keepDupes;
         this.bamFileName = bamFileName;
-        this.bedFileName = bedFileName;
+        this.queryIntervals = queryIntervals;
 
         // setup outputs
         if (outCovTab == null) {
@@ -60,7 +60,6 @@ public class CallableDepth {
             intervals.add(new Interval(f.getContig(), f.getStart(), f.getEnd()));
         }
         bedReader.close();
-        Collections.sort(intervals);
         return intervals;
     }
 
@@ -74,43 +73,38 @@ public class CallableDepth {
         long totalAlignedBases = 0;
         long duplicateReads = 0;
 
-        try {
-            ArrayList<Interval> queryIntervals = readIntervals(bedFileName);
-            for (Interval interval : queryIntervals) {
-                int [] coverages = new int[interval.length()];
-                SAMRecordIterator query = reader.queryOverlapping(interval.getContig(), interval.getStart(), interval.getEnd());
-                // cannot just use enhanced for loop (or groovy 'each') because htsjdk needs its iterators to be `close`d, so we need a reference to the iterator!
-                while (query.hasNext()) {
-                    SAMRecord rec = query.next();
+        for (Interval interval : queryIntervals) {
+            int[] coverages = new int[interval.length()];
+            SAMRecordIterator query = reader.queryOverlapping(interval.getContig(), interval.getStart(), interval.getEnd());
+            // cannot just use enhanced for loop (or groovy 'each') because htsjdk needs its iterators to be `close`d, so we need a reference to the iterator!
+            while (query.hasNext()) {
+                SAMRecord rec = query.next();
 
-                    if (rec.getMappingQuality() < minimumMapScore || rec.getReadFailsVendorQualityCheckFlag() || rec.getNotPrimaryAlignmentFlag() || rec.getReadUnmappedFlag()) {
-                        continue;
-                    }
-                    if (rec.getReadPairedFlag()) {
-                        totalReadsPaired++;
-                        if (!rec.getMateUnmappedFlag()) totalPairedReadWithMappedMates++;
-                    }
-                    if (rec.getDuplicateReadFlag()) {
-                        duplicateReads++;
-                        if (!keepDupes) continue;
-                    }
-                    byte [] baseQualities = rec.getBaseQualities();
-                    for (int i = 0; i < rec.getReadLength(); i++) {
-                        int refPos = rec.getReferencePositionAtReadPosition(i+1); // htsjdk expects ONE-based read offset
-                        if (refPos > 0) { // 0 is used for 'no corresponding position', e.g. insertion
-                            int intervalPos = refPos - interval.getStart(); // ZERO-based intervalPos
-                            if ((intervalPos >= 0) && (intervalPos < interval.length())) {
-                                totalAlignedBases++;
-                                if (baseQualities[i] >= minimumBaseQuality) coverages[intervalPos]++;
-                            }
+                if (rec.getMappingQuality() < minimumMapScore || rec.getReadFailsVendorQualityCheckFlag() || rec.getNotPrimaryAlignmentFlag() || rec.getReadUnmappedFlag()) {
+                    continue;
+                }
+                if (rec.getReadPairedFlag()) {
+                    totalReadsPaired++;
+                    if (!rec.getMateUnmappedFlag()) totalPairedReadWithMappedMates++;
+                }
+                if (rec.getDuplicateReadFlag()) {
+                    duplicateReads++;
+                    if (!keepDupes) continue;
+                }
+                byte[] baseQualities = rec.getBaseQualities();
+                for (int i = 0; i < rec.getReadLength(); i++) {
+                    int refPos = rec.getReferencePositionAtReadPosition(i + 1); // htsjdk expects ONE-based read offset
+                    if (refPos > 0) { // 0 is used for 'no corresponding position', e.g. insertion
+                        int intervalPos = refPos - interval.getStart(); // ZERO-based intervalPos
+                        if ((intervalPos >= 0) && (intervalPos < interval.length())) {
+                            totalAlignedBases++;
+                            if (baseQualities[i] >= minimumBaseQuality) coverages[intervalPos]++;
                         }
                     }
                 }
-                query.close();
-                flushOutput(interval, coverages);
             }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+            query.close();
+            flushOutput(interval, coverages);
         }
         if (covFastaOut != null) {
             covFastaOut.close();
@@ -154,6 +148,15 @@ public class CallableDepth {
         }
     }
 
+    private static Interval parseRegion(String region) {
+        int colon = region.lastIndexOf(':');
+        String contig = region.substring(0, colon);
+        int dash = region.lastIndexOf('-');
+        int start = Integer.parseInt(region.substring(colon+1, dash));
+        int end = Integer.parseInt(region.substring(dash+1));
+        return new Interval(contig, start, end);
+    }
+
     static class ArgParser {
         @Parameter(names = {"-h", "--help"}, help = true)
         private boolean help;
@@ -163,17 +166,19 @@ public class CallableDepth {
         public int minimumBaseQuality = 20;
         @Parameter(names="-keepDupes", description="include duplicates in analysis")
         public boolean keepDupes;
-        @Parameter(names={"-bed", "-l"}, description="BED file of intervals to analyze (ZERO-based coordinates)", required=true)
-        public String bedFile;
+        @Parameter(names={"-bed", "-l"}, description="BED file of intervals to analyze (ZERO-based coordinates)")
+        public String bedFile = null;
+        @Parameter(names={"-r", "-region"}, description="Regions to analyze (ONE-based), like \"1:32221-42212\", can be specified multiple times")
+        public List<String> region;
         @Parameter(names={"-o", "-covFasta"}, description="Ouput as a \"coverage.fasta\" file (will output to stdout if no output specified)")
-        public String covFastaOut;
+        public String covFastaOut = null;
         @Parameter(names={"-t", "-covTSV"}, description="Ouput as a tab-delimited text file")
-        public String covTabOut;
+        public String covTabOut = null;
         @Parameter(description = "bamFile")
         public List<String> bamFiles = new ArrayList<String>();
     }
 
-    public static void main(String [] args) throws FileNotFoundException {
+    public static void main(String [] args) throws IOException {
         ArgParser ap = new ArgParser();
         JCommander jc = new JCommander(ap);
         jc.parse(args);
@@ -182,11 +187,28 @@ public class CallableDepth {
             System.exit(0);
         }
         if (ap.bamFiles.size() != 1) {
-            throw new RuntimeException("Must provide exactly one bam file!");
+            jc.usage();
+            throw new IllegalArgumentException("Must provide exactly one bam file!");
+        }
+
+        ArrayList<Interval> queryIntervals;
+        if (ap.region.isEmpty() && ap.bedFile == null) {
+            jc.usage();
+            throw new IllegalArgumentException("Must provide one of '-r' or '-l'");
+        } else {
+            if (ap.bedFile != null) {
+                queryIntervals = CallableDepth.readIntervals(ap.bedFile);
+            } else {
+                queryIntervals = new ArrayList<Interval>();
+            }
+            for (String region : ap.region) {
+                queryIntervals.add(parseRegion(region));
+            }
+            Collections.sort(queryIntervals);
         }
 
         CallableDepth main = new CallableDepth(ap.minimumMapScore, ap.minimumBaseQuality, ap.keepDupes,
-                ap.bamFiles.get(0), ap.bedFile, ap.covFastaOut, ap.covTabOut);
+                ap.bamFiles.get(0), queryIntervals, ap.covFastaOut, ap.covTabOut);
         main.analyze();
     }
 
