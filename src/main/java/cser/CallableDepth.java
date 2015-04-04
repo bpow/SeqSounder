@@ -323,12 +323,7 @@ public class CallableDepth {
             jc.usage();
             throw new IllegalArgumentException("Must provide exactly one bam file!");
         }
-
-        if ((cd.region == null || cd.region.isEmpty()) && cd.bedFile == null) {
-            jc.usage();
-            throw new IllegalArgumentException("Must provide one of '-r' or '-l'");
-        }
-
+        
         if (!cd.suffix.isEmpty() && !cd.suffix.startsWith(".")) {
             cd.suffix = "." + cd.suffix;
         }
