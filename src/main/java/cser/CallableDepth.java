@@ -33,7 +33,7 @@ public class CallableDepth {
     @Parameter(names={"-bed", "-l"}, description="BED file of intervals to analyze (ZERO-based coordinates)")
     public String bedFile = null;
     @Parameter(names={"-r", "-region"}, description="Regions to analyze (ONE-based), like \"1:32221-42212\", can be specified multiple times")
-    public List<String> region;
+    public List<String> region = new ArrayList<String>();
     @Parameter(names={"-f", "-covFasta"}, description="Generate a .covfasta file")
     public boolean makeCovFasta;
     @Parameter(names={"-t", "-covBedGraph"}, description="Generate a tab-delimited (bedGraph) coverage file")
@@ -323,7 +323,7 @@ public class CallableDepth {
             jc.usage();
             throw new IllegalArgumentException("Must provide exactly one bam file!");
         }
-        
+
         if (!cd.suffix.isEmpty() && !cd.suffix.startsWith(".")) {
             cd.suffix = "." + cd.suffix;
         }
