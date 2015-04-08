@@ -284,24 +284,6 @@ public class CallableDepth {
         return intervals;
     }
 
-    public static String joinInts(String separator, int... ints) {
-        if (ints.length == 0) return "";
-        if (ints.length == 1) return Integer.toString(ints[0]);
-        StringBuilder sb = new StringBuilder().append(ints[0]);
-        for (int i = 1; i < ints.length; i++) {
-            sb.append(separator).append(ints[i]);
-        }
-        return sb.toString();
-    }
-
-    public static PrintStream openOutput(String filename) throws IOException {
-        if (filename.endsWith(".gz")) {
-            return new PrintStream(new GZIPOutputStream(new FileOutputStream(filename)));
-        } else {
-            return new PrintStream(new BufferedOutputStream(new FileOutputStream(filename)));
-        }
-    }
-
     private static Interval parseRegion(String region) {
         int colon = region.lastIndexOf(':');
         String contig = region.substring(0, colon);
