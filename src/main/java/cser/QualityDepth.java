@@ -16,9 +16,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
-import java.util.zip.GZIPOutputStream;
 
-public class CallableDepth {
+public class QualityDepth {
     private static final int COVERAGE_HISTOGRAM_MAX = 1000;
     @Parameter(names = {"-h", "--help"}, help = true)
     public boolean help;
@@ -115,7 +114,6 @@ public class CallableDepth {
         private final int minimumMapScore;
         private final int minimumBaseQuality;
         private final boolean keepDupes;
-        private final String bamFileName;
         private final List<Interval> intervalsOfInterest;
         private final PrintStream covTabOut;
         private final PrintStream covFastaOut;
@@ -134,7 +132,6 @@ public class CallableDepth {
             this.minimumMapScore = minimumMapScore;
             this.minimumBaseQuality = minimumBaseQuality;
             this.keepDupes = keepDupes;
-            this.bamFileName = bamFileName;
 
             this.covFastaOut = covFastaOut;
             this.covTabOut = covTabOut;
@@ -294,23 +291,23 @@ public class CallableDepth {
     }
 
     public static void main(String [] args) throws IOException {
-        CallableDepth cd = new CallableDepth();
-        JCommander jc = new JCommander(cd);
+        QualityDepth qd = new QualityDepth();
+        JCommander jc = new JCommander(qd);
         jc.parse(args);
-        if (cd.help) {
+        if (qd.help) {
             jc.usage();
             System.exit(0);
         }
-        if (cd.bamFiles.size() != 1) {
+        if (qd.bamFiles.size() != 1) {
             jc.usage();
             throw new IllegalArgumentException("Must provide exactly one bam file!");
         }
 
-        if (!cd.suffix.isEmpty() && !cd.suffix.startsWith(".")) {
-            cd.suffix = "." + cd.suffix;
+        if (!qd.suffix.isEmpty() && !qd.suffix.startsWith(".")) {
+            qd.suffix = "." + qd.suffix;
         }
 
-        cd.analyze();
+        qd.analyze();
     }
 
 }
