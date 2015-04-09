@@ -12,10 +12,7 @@ import htsjdk.tribble.bed.BEDCodec;
 import htsjdk.tribble.bed.BEDFeature;
 
 import java.io.*;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 
 public class QualityDepth {
     private static final int COVERAGE_HISTOGRAM_MAX = 1000;
@@ -59,8 +56,8 @@ public class QualityDepth {
 
         // Merge overlapping intervals
         ArrayList<Interval> outIntervals = new ArrayList<Interval>(inputIntervals.size());
-        Interval activeInterval = outIntervals.get(0);
-        for (Interval next : outIntervals) {
+        Interval activeInterval = inputIntervals.remove(0);
+        for (Interval next : inputIntervals) {
             if (activeInterval.abuts(next) || activeInterval.intersects(next)) {
                 activeInterval = new Interval(activeInterval.getContig(), activeInterval.getStart(), next.getEnd());
                 System.err.printf("WARNING: intervals overlap, coalescing:\n\t%s\n\t%s\n", activeInterval, next);
@@ -156,6 +153,7 @@ public class QualityDepth {
         private int currCoverage = -1;
         private Integer currCoverageStart = null;
         private int flushPrior(int alreadyFlushed, int barrier, Interval region) {
+            if (alreadyFlushed + 1 >= barrier) return alreadyFlushed;
             for (int i = alreadyFlushed + 1; i < barrier; i++) {
                 Integer coverage = coverages.remove(i);
                 if (coverage == null) coverage = 0;
@@ -221,7 +219,7 @@ public class QualityDepth {
                     byte[] baseQualities = rec.getBaseQualities();
                     for (int i = 0; i < rec.getReadLength(); i++) {
                         int refPos = rec.getReferencePositionAtReadPosition(i+1);  // htsjdk expects ONE-based read offset
-                        if (refPos > 0) { // 0 is used for 'no corresponding position', e.g. insertion
+                        if (refPos >= interval.getStart() && refPos <= interval.getEnd()) { // 0 is used for 'no corresponding position', e.g. insertion
                             totalAlignedBases++;
                             if (baseQualities[i] >= minimumBaseQuality) coverages.put(refPos, coverages.getOrDefault(refPos, 0) + 1);
                         }
