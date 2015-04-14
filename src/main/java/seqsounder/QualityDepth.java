@@ -1,4 +1,4 @@
-package cser;
+package seqsounder;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
