@@ -107,6 +107,28 @@ public class QualityDepth {
         }
     }
 
+    private class MutableInteger {
+        public int i;
+
+        public MutableInteger(int i) { this.i = i; }
+
+        @Override
+        public int hashCode() { return i; }
+
+        public final int increment() { return ++i; }
+    }
+
+    private class CoverageMap extends HashMap<Integer, MutableInteger> {
+        public MutableInteger getDefault(Integer key) {
+            MutableInteger mi = super.get(key);
+            if (null == mi) {
+                mi = new MutableInteger(0);
+                super.put(key, mi);
+            }
+            return mi;
+        }
+    }
+
     public class DepthWorker implements Runnable {
         private final int minimumMapScore;
         private final int minimumBaseQuality;
@@ -120,8 +142,7 @@ public class QualityDepth {
         private final long[] coverageHistogram = new long[COVERAGE_HISTOGRAM_MAX+1];
 
         // maps position -> coverage
-        HashMap<Integer, Integer> coverages = new HashMap<Integer, Integer>();
-
+        CoverageMap coverages = new CoverageMap();
 
         public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes,
                            String bamFileName, List<Interval> intervalsOfInterest,
@@ -155,8 +176,8 @@ public class QualityDepth {
         private int flushPrior(int alreadyFlushed, int barrier, Interval region) {
             if (alreadyFlushed + 1 >= barrier) return alreadyFlushed;
             for (int i = alreadyFlushed + 1; i < barrier; i++) {
-                Integer coverage = coverages.remove(i);
-                if (coverage == null) coverage = 0;
+                MutableInteger mutCoverage = coverages.remove(i);
+                Integer coverage = mutCoverage == null ? 0 : mutCoverage.i;
                 if (coverage > COVERAGE_HISTOGRAM_MAX) {
                     coverageHistogram[COVERAGE_HISTOGRAM_MAX]++;
                 } else {
@@ -221,7 +242,7 @@ public class QualityDepth {
                         int refPos = rec.getReferencePositionAtReadPosition(i+1);  // htsjdk expects ONE-based read offset
                         if (refPos >= interval.getStart() && refPos <= interval.getEnd()) { // 0 is used for 'no corresponding position', e.g. insertion
                             totalAlignedBases++;
-                            if (baseQualities[i] >= minimumBaseQuality) coverages.put(refPos, coverages.getOrDefault(refPos, 0) + 1);
+                            if (baseQualities[i] >= minimumBaseQuality) coverages.getDefault(refPos).increment();
                         }
                     }
                     flushed = flushPrior(flushed, rec.getAlignmentStart(), interval);
