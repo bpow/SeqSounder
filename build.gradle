@@ -11,7 +11,6 @@ repositories {
 
 dependencies {
     compile 'com.github.samtools:htsjdk:1.130'
-    compile 'com.beust:jcommander:1.47'
 }
 
 jar {
