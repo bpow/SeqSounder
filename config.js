@@ -1,3 +1,3 @@
-qd.suffix = "jstest"
-qd.threadCount = 4
-qd.bamFiles = []
+qd.set('suffix', "jstest")
+qd.set('threadCount', 4)
+qd.set('bamFiles',[])

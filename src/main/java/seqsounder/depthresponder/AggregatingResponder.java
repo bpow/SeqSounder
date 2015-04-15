@@ -25,17 +25,17 @@ public class AggregatingResponder extends DepthResponder {
         } else {
             if (workingSiteDepth.end < siteDepth.start) { // discontinuity
                 if (workingSiteDepth.depth == 0) {
-                    workingSiteDepth = new SiteDepth(workingSiteDepth.start, siteDepth.start, workingSiteDepth.depth);
+                    workingSiteDepth = new SiteDepth(workingSiteDepth.contig, workingSiteDepth.start, siteDepth.start, workingSiteDepth.depth);
                 } else {
                     emitDepth(workingSiteDepth);
-                    workingSiteDepth = new SiteDepth(workingSiteDepth.end, siteDepth.start, 0);
+                    workingSiteDepth = new SiteDepth(workingSiteDepth.contig, workingSiteDepth.end, siteDepth.start, 0);
                 }
             }
             if (workingSiteDepth.depth != siteDepth.depth) {
                 emitDepth(workingSiteDepth);
                 workingSiteDepth = siteDepth;
             } else {
-                workingSiteDepth = new SiteDepth(workingSiteDepth.start, siteDepth.end, siteDepth.depth);
+                workingSiteDepth = new SiteDepth(workingSiteDepth.contig, workingSiteDepth.start, siteDepth.end, siteDepth.depth);
             }
         }
     }

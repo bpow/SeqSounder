@@ -9,7 +9,6 @@ import java.io.FileOutputStream;
 import java.io.PrintStream;
 
 public class BedGraphResponder extends DepthResponder {
-    private String contig;
     private final PrintStream output;
 
     public BedGraphResponder(PrintStream output) {
@@ -22,13 +21,8 @@ public class BedGraphResponder extends DepthResponder {
     }
 
     @Override
-    public void startRegion(Interval region) {
-        contig = region.getContig();
-    }
-
-    @Override
     public void markDepth(SiteDepth siteDepth) {
-        output.println(contig + "\t" + siteDepth.start + "\t" + siteDepth.end + "\t" + siteDepth.depth);
+        output.println(siteDepth.contig + "\t" + siteDepth.start + "\t" + siteDepth.end + "\t" + siteDepth.depth);
     }
 
     @Override

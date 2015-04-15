@@ -6,44 +6,35 @@ import seqsounder.depthresponder.*;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.PrintStream;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 
 public class DepthWorker implements Runnable {
     private final int minimumMapScore;
     private final int minimumBaseQuality;
     private final boolean keepDupes;
     private final List<Interval> intervalsOfInterest;
-    private final PrintStream covTabOut;
-    private final PrintStream covFastaOut;
-    private final PrintStream reportOut;
-    private final ArrayList<DepthResponder> responders = new ArrayList<DepthResponder>();
+    private final DepthResponder responder;
+    private long totalReadsPaired = 0;
+    private long totalPairedReadsWithMappedMates = 0;
+    private long totalAlignedBases = 0;
+    private long duplicateReads = 0;
+    private long totalBases = -1;
+    private long basesSoFar = -1;
 
     private final SamReader reader;
-    private final HistogramResponder histogramCreator;
-
-    // maps position -> coverage
-    CoverageMap coverages = new CoverageMap();
 
     public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes, int histogramMaxDepth,
-                       String bamFileName, List<Interval> intervalsOfInterest,
-                       PrintStream covFastaOut, PrintStream covTabOut, PrintStream reportOut) throws IOException {
+                       String bamFileName, List<Interval> intervalsOfInterest, DepthResponder responder) throws IOException {
         this.minimumMapScore = minimumMapScore;
         this.minimumBaseQuality = minimumBaseQuality;
         this.keepDupes = keepDupes;
-
-        this.covFastaOut = covFastaOut;
-        this.covTabOut = covTabOut;
-        this.reportOut = reportOut;
 
         reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
         if (intervalsOfInterest.isEmpty()) {
             intervalsOfInterest = wholeGenomeIntervalsForBamFile(reader);
         }
         this.intervalsOfInterest = intervalsOfInterest; // to be really safe, could copy...
-        histogramCreator = new HistogramResponder(histogramMaxDepth);
+        this.responder = responder;
     }
 
     private List<Interval> wholeGenomeIntervalsForBamFile(SamReader reader) {
@@ -54,16 +45,23 @@ public class DepthWorker implements Runnable {
         return intervals;
     }
 
-    private int flushPrior(int alreadyFlushed, int barrier, Interval region) {
+    private static final long totalBasesInIntervals(List<Interval> intervals) {
+        long total = 0;
+        for (Interval i : intervals) {
+            total += i.length();
+        }
+        return total;
+    }
+
+    private int flushPrior(CoverageMap coverages, int alreadyFlushed, int barrier, Interval region) {
         if (alreadyFlushed + 1 >= barrier) return alreadyFlushed;
         for (int i = alreadyFlushed + 1; i < barrier; i++) {
             SiteDepth mutCoverage = coverages.remove(i);
             if (mutCoverage == null) {
-                mutCoverage = new SiteDepth(i, 0);
+                mutCoverage = new SiteDepth(region.getContig(), i, 0);
             }
-            for (DepthResponder responder : responders) {
-                responder.markDepth(mutCoverage);
-            }
+            responder.markDepth(mutCoverage);
+            basesSoFar++;
         }
         alreadyFlushed = barrier - 1;
         if (barrier >= region.getEnd() + 1) { // finishing region
@@ -75,26 +73,11 @@ public class DepthWorker implements Runnable {
 
     @Override
     public void run() {
-
-        long totalReadsPaired = 0;
-        long totalPairedReadsWithMappedMates = 0;
-        long totalAlignedBases = 0;
-        long duplicateReads = 0;
-
-        AggregatingResponder aggregator = new AggregatingResponder(histogramCreator);
-        if (covTabOut != null) {
-            aggregator.addClients(new BedGraphResponder(covTabOut));
-        }
-        if (covFastaOut != null) {
-            aggregator.addClients(new CovFastaResponder(covFastaOut));
-        }
-        responders.add(aggregator);
-
+        totalBases = totalBasesInIntervals(intervalsOfInterest);
         for (Interval interval : intervalsOfInterest) {
             SAMRecordIterator query = reader.query(interval.getContig(), interval.getStart(), interval.getEnd(), false);
-            for (DepthResponder responder : responders) {
-                responder.startRegion(interval);
-            }
+            responder.startRegion(interval);
+            CoverageMap coverages = new CoverageMap(interval.getContig());
             int flushed = interval.getStart() - 1;
             while (query.hasNext()) {
                 SAMRecord rec = query.next();
@@ -118,28 +101,30 @@ public class DepthWorker implements Runnable {
                         if (baseQualities[i] >= minimumBaseQuality) coverages.getDefault(refPos).increment();
                     }
                 }
-                flushed = flushPrior(flushed, rec.getAlignmentStart(), interval);
+                flushed = flushPrior(coverages, flushed, rec.getAlignmentStart(), interval);
             }
-            flushed = flushPrior(flushed, interval.getEnd() + 1, interval);
-            for (DepthResponder responder : responders) {
-                responder.finishRegion(interval);
-            }
+            flushed = flushPrior(coverages, flushed, interval.getEnd() + 1, interval);
+            responder.finishRegion(interval);
             query.close();
         }
-        for (DepthResponder responder : responders) {
-            responder.finishAll();
-        }
+        responder.finishAll();
         try {
             reader.close();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
 
-        //----------------------------   Write report
-        reportOut.printf("Total Reads Paired:\t%d\n", totalReadsPaired);
-        reportOut.printf("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
-        reportOut.printf("Duplicate Reads:\t%d\n", duplicateReads);
-        reportOut.printf("Total aligned bases:\t%d\n", totalAlignedBases);
+    }
+
+    public String summary() {
+        StringBuilder sb = new StringBuilder();
+        Formatter reportOut = new Formatter(sb, Locale.US);
+
+        reportOut.format("Total Reads Paired:\t%d\n", totalReadsPaired);
+        reportOut.format("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
+        reportOut.format("Duplicate Reads:\t%d\n", duplicateReads);
+        reportOut.format("Total aligned bases:\t%d\n", totalAlignedBases);
+/*
         long[] coverageHistogram = histogramCreator.getHistogram();
         long hist_at_least[] = new long[coverageHistogram.length];
         long cumulative = 0;
@@ -156,13 +141,18 @@ public class DepthWorker implements Runnable {
         }
         reportOut.println("#-----------------------------------------------------------------------------------------#");
         reportOut.close();
+*/
+
+        return sb.toString();
     }
 
     private class CoverageMap extends HashMap<Integer, SiteDepth> {
+        public final String contig;
+        CoverageMap(String contig) { this.contig = contig; }
         public SiteDepth getDefault(Integer key) {
             SiteDepth mi = super.get(key);
             if (null == mi) {
-                mi = new SiteDepth(key, 0);
+                mi = new SiteDepth(contig, key, 0);
                 super.put(key, mi);
             }
             return mi;

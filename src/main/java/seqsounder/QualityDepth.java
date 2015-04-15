@@ -7,11 +7,13 @@ import htsjdk.tribble.CloseableTribbleIterator;
 import htsjdk.tribble.FeatureReader;
 import htsjdk.tribble.bed.BEDCodec;
 import htsjdk.tribble.bed.BEDFeature;
+import seqsounder.depthresponder.*;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
 import java.io.*;
+import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -19,16 +21,30 @@ import java.util.concurrent.TimeUnit;
 
 public class QualityDepth {
     private static final int COVERAGE_HISTOGRAM_MAX = 1000;
-    public int minimumMapScore = 20;
-    public int minimumBaseQuality = 20;
-    public boolean keepDupes = false;
-    public boolean compressOutput = true;
-    public String bedFile = null;
-    public boolean makeCovFasta = false;
-    public boolean makeCovBedGraph = true;
-    public String suffix = "";
-    public List<String> bamFiles = new ArrayList<String>();
-    public int threadCount = 1;
+    private int minimumMapScore = 20;
+    private int minimumBaseQuality = 20;
+    private boolean keepDupes = false;
+    private boolean compressOutput = true;
+    private String bedFile = null;
+    private boolean makeCovFasta = false;
+    private boolean makeCovBedGraph = true;
+    private String suffix = "";
+    private List<String> bamFiles = new ArrayList<String>();
+    private int threadCount = 1;
+
+    public QualityDepth set(String parameter, Object value) {
+        Class<? extends QualityDepth> clazz = this.getClass();
+        try {
+            Field f = clazz.getDeclaredField(parameter);
+            f.set(this, value);
+        } catch (NoSuchFieldException e) {
+            e.printStackTrace();
+            return null;
+        } catch (IllegalAccessException e) {
+            e.printStackTrace();
+        }
+        return this;
+    }
 
     public void analyze() throws IOException {
         ArrayList<Interval> intervals = bedFile == null ? new ArrayList<Interval>() : readIntervals(bedFile);
@@ -44,12 +60,15 @@ public class QualityDepth {
             }
             prefix += suffix;
 
+            AggregatingResponder aggregator = new AggregatingResponder();
+
             if (makeCovFasta) {
                 if (compressOutput) {
                     fasta = new PrintStream(new BlockCompressedOutputStream(prefix + ".covfasta.gz"));
                 } else {
                     fasta = new PrintStream(new BufferedOutputStream(new FileOutputStream(prefix + ".covfasta")));
                 }
+                aggregator.addClients(new CovFastaResponder(fasta));
             }
             if (makeCovBedGraph) {
                 if (compressOutput) {
@@ -57,12 +76,11 @@ public class QualityDepth {
                 } else {
                     bedGraph = new PrintStream(new BufferedOutputStream(new FileOutputStream(prefix + ".bedgraph")));
                 }
+                aggregator.addClients(new BedGraphResponder(bedGraph));
             }
 
-            PrintStream report = new PrintStream(new File(prefix + ".report"));
-
             DepthWorker worker = new DepthWorker(minimumMapScore, minimumBaseQuality, keepDupes, COVERAGE_HISTOGRAM_MAX, bamFile,
-                    intervals, fasta, bedGraph, report);
+                    intervals, aggregator);
             executor.execute(worker);
         }
         try {
@@ -70,6 +88,7 @@ public class QualityDepth {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+        executor.shutdown();
     }
 
     public static ArrayList<Interval> readIntervals(String bedFileName) throws IOException {
