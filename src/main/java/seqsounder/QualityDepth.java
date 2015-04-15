@@ -10,6 +10,7 @@ import htsjdk.tribble.CloseableTribbleIterator;
 import htsjdk.tribble.FeatureReader;
 import htsjdk.tribble.bed.BEDCodec;
 import htsjdk.tribble.bed.BEDFeature;
+import seqsounder.depthresponder.*;
 
 import java.io.*;
 import java.util.*;
@@ -107,22 +108,11 @@ public class QualityDepth {
         }
     }
 
-    private class MutableInteger {
-        public int i;
-
-        public MutableInteger(int i) { this.i = i; }
-
-        @Override
-        public int hashCode() { return i; }
-
-        public final int increment() { return ++i; }
-    }
-
-    private class CoverageMap extends HashMap<Integer, MutableInteger> {
-        public MutableInteger getDefault(Integer key) {
-            MutableInteger mi = super.get(key);
+    private class CoverageMap extends HashMap<Integer, SiteDepth> {
+        public SiteDepth getDefault(Integer key) {
+            SiteDepth mi = super.get(key);
             if (null == mi) {
-                mi = new MutableInteger(0);
+                mi = new SiteDepth(key, 0);
                 super.put(key, mi);
             }
             return mi;
@@ -137,9 +127,10 @@ public class QualityDepth {
         private final PrintStream covTabOut;
         private final PrintStream covFastaOut;
         private final PrintStream reportOut;
+        private final ArrayList<DepthResponder> responders = new ArrayList<DepthResponder>();
 
         private final SamReader reader;
-        private final long[] coverageHistogram = new long[COVERAGE_HISTOGRAM_MAX+1];
+        private final HistogramResponder histogramCreator = new HistogramResponder(COVERAGE_HISTOGRAM_MAX);
 
         // maps position -> coverage
         CoverageMap coverages = new CoverageMap();
@@ -170,42 +161,21 @@ public class QualityDepth {
             return intervals;
         }
 
-        // if this were not java, would closure these currCoverage and currCoverage start into here
-        private int currCoverage = -1;
-        private Integer currCoverageStart = null;
         private int flushPrior(int alreadyFlushed, int barrier, Interval region) {
             if (alreadyFlushed + 1 >= barrier) return alreadyFlushed;
             for (int i = alreadyFlushed + 1; i < barrier; i++) {
-                MutableInteger mutCoverage = coverages.remove(i);
-                Integer coverage = mutCoverage == null ? 0 : mutCoverage.i;
-                if (coverage > COVERAGE_HISTOGRAM_MAX) {
-                    coverageHistogram[COVERAGE_HISTOGRAM_MAX]++;
-                } else {
-                    coverageHistogram[coverage]++;
+                SiteDepth mutCoverage = coverages.remove(i);
+                if (mutCoverage == null) {
+                    mutCoverage = new SiteDepth(i, 0);
                 }
-                if (covFastaOut != null) {
-                    covFastaOut.print((i-region.getStart()) % 100 == 0 ? "\n" : " ");
-                    covFastaOut.print(coverage);
-                }
-                if (coverage != currCoverage) {
-                    if (currCoverageStart != null) {
-                        if (covTabOut != null)
-                            covTabOut.printf("%s\t%d\t%d\t%d\n", region.getContig(), currCoverageStart-1, i - 1, currCoverage);
-                    }
-                    currCoverage = coverage;
-                    currCoverageStart = i;
+                for (DepthResponder responder : responders) {
+                    responder.markDepth(mutCoverage);
                 }
             }
+            alreadyFlushed = barrier - 1;
             if (barrier >= region.getEnd() + 1) { // finishing region
-                if (covTabOut != null)
-                    covTabOut.printf("%s\t%d\t%d\t%d\n", region.getContig(), currCoverageStart-1, barrier-1, currCoverage);
-                if (covFastaOut != null)
-                    covFastaOut.print("\n");
                 alreadyFlushed = -1;
-                currCoverage = -1;
-                currCoverageStart = null;
             } else {
-                alreadyFlushed = barrier - 1;
             }
             return alreadyFlushed;
         }
@@ -218,10 +188,20 @@ public class QualityDepth {
             long totalAlignedBases = 0;
             long duplicateReads = 0;
 
+            AggregatingResponder aggregator = new AggregatingResponder(histogramCreator);
+            if (covTabOut != null) {
+                aggregator.addClients(new BedGraphResponder(covTabOut));
+            }
+            if (covFastaOut != null) {
+                aggregator.addClients(new CovFastaResponder(covFastaOut));
+            }
+            responders.add(aggregator);
+
             for (Interval interval : intervalsOfInterest) {
                 SAMRecordIterator query = reader.query(interval.getContig(), interval.getStart(), interval.getEnd(), false);
-                if (covFastaOut != null)
-                    covFastaOut.printf(">%s:%d-%d", interval.getContig(), interval.getStart(), interval.getEnd());
+                for (DepthResponder responder : responders) {
+                    responder.startRegion(interval);
+                }
                 int flushed = interval.getStart()-1;
                 while (query.hasNext()) {
                     SAMRecord rec = query.next();
@@ -248,18 +228,18 @@ public class QualityDepth {
                     flushed = flushPrior(flushed, rec.getAlignmentStart(), interval);
                 }
                 flushed = flushPrior(flushed, interval.getEnd()+1, interval);
+                for (DepthResponder responder : responders) {
+                    responder.finishRegion(interval);
+                }
                 query.close();
+            }
+            for (DepthResponder responder : responders) {
+                responder.finishAll();
             }
             try {
                 reader.close();
             } catch (IOException e) {
                 throw new RuntimeException(e);
-            }
-            if (covFastaOut != null) {
-                covFastaOut.close();
-            }
-            if (covTabOut != null) {
-                covTabOut.close();
             }
 
             //----------------------------   Write report
@@ -267,16 +247,17 @@ public class QualityDepth {
             reportOut.printf("Total Paired Reads With Mapped Mates:\t%d\n", totalPairedReadsWithMappedMates);
             reportOut.printf("Duplicate Reads:\t%d\n", duplicateReads);
             reportOut.printf("Total aligned bases:\t%d\n", totalAlignedBases);
+            long [] coverageHistogram = histogramCreator.getHistogram();
             long hist_at_least[] = new long[coverageHistogram.length];
             long cumulative = 0;
-            for (int i = COVERAGE_HISTOGRAM_MAX; i >= 0 ; i--) {
+            for (int i = coverageHistogram.length-1; i >= 0 ; i--) {
                 cumulative += coverageHistogram[i];
                 hist_at_least[i] = cumulative;
             }
             cumulative = 0;
             reportOut.println("#-----------------------------------------------------------------------------------------#");
-            reportOut.println("Coverage\tCount\tCumulative Below\tCumulativeAbove");
-            for (int i = 0; i <= COVERAGE_HISTOGRAM_MAX; i++) {
+            reportOut.println("Coverage\tCount\tCumulative Below\tCumulative Above");
+            for (int i = 0; i < coverageHistogram.length; i++) {
                 cumulative += coverageHistogram[i];
                 reportOut.printf("%d\t%d\t%d\t%d\n", i, coverageHistogram[i], cumulative, hist_at_least[i]);
             }
