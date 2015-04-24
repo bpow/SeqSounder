@@ -6,6 +6,8 @@ import seqsounder.depthresponder.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.*;
 
 public class DepthWorker implements Runnable {
@@ -23,13 +25,21 @@ public class DepthWorker implements Runnable {
 
     private final SamReader reader;
 
-    public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes, int histogramMaxDepth,
+    public DepthWorker(int minimumMapScore, int minimumBaseQuality, boolean keepDupes,
                        String bamFileName, List<Interval> intervalsOfInterest, DepthResponder responder) throws IOException {
         this.minimumMapScore = minimumMapScore;
         this.minimumBaseQuality = minimumBaseQuality;
         this.keepDupes = keepDupes;
 
-        reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
+        SamReaderFactory srf = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT);
+        SamReader tmpReader;
+        try {
+            URL url = new URL(bamFileName);
+            tmpReader = srf.open(SamInputResource.of(url).index(new URL(bamFileName + ".bai")));
+        } catch (MalformedURLException mue) {
+            tmpReader = srf.open(new File(bamFileName));
+        }
+        reader = tmpReader;
         if (intervalsOfInterest.isEmpty()) {
             intervalsOfInterest = wholeGenomeIntervalsForBamFile(reader);
         }

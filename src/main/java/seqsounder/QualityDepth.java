@@ -26,10 +26,9 @@ public class QualityDepth {
     private boolean keepDupes = false;
     private boolean compressOutput = true;
     private String bedFile = null;
-    private boolean makeCovFasta = false;
-    private boolean makeCovBedGraph = true;
-    private String suffix = "";
-    private List<String> bamFiles = new ArrayList<String>();
+    private String covFasta = null;
+    private String covBedGraph = null;
+    private List<String> bamNames = new ArrayList<String>();
     private int threadCount = 1;
 
     public QualityDepth set(String parameter, Object value) {
@@ -50,36 +49,30 @@ public class QualityDepth {
         ArrayList<Interval> intervals = bedFile == null ? new ArrayList<Interval>() : readIntervals(bedFile);
         final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
 
-        for (String bamFile : bamFiles) {
+        for (String bamFile : bamNames) {
             PrintStream fasta = null;
             PrintStream bedGraph = null;
 
-            String prefix = bamFile;
-            if (prefix.endsWith(".bam") || prefix.endsWith(".BAM")) {
-                prefix = prefix.substring(0, prefix.length()-4);
-            }
-            prefix += suffix;
-
             AggregatingResponder aggregator = new AggregatingResponder();
 
-            if (makeCovFasta) {
-                if (compressOutput) {
-                    fasta = new PrintStream(new BlockCompressedOutputStream(prefix + ".covfasta.gz"));
+            if (covFasta != null) {
+                if (covFasta.endsWith(".gz")) {
+                    fasta = new PrintStream(new BlockCompressedOutputStream(covFasta));
                 } else {
-                    fasta = new PrintStream(new BufferedOutputStream(new FileOutputStream(prefix + ".covfasta")));
+                    fasta = new PrintStream(new BufferedOutputStream(new FileOutputStream(covFasta)));
                 }
                 aggregator.addClients(new CovFastaResponder(fasta));
             }
-            if (makeCovBedGraph) {
-                if (compressOutput) {
-                    bedGraph = new PrintStream(new BlockCompressedOutputStream(prefix + ".bedgraph.gz"));
+            if (covBedGraph != null) {
+                if (covBedGraph.endsWith(".gz")) {
+                    bedGraph = new PrintStream(new BlockCompressedOutputStream(covBedGraph));
                 } else {
-                    bedGraph = new PrintStream(new BufferedOutputStream(new FileOutputStream(prefix + ".bedgraph")));
+                    bedGraph = new PrintStream(new BufferedOutputStream(new FileOutputStream(covBedGraph)));
                 }
                 aggregator.addClients(new BedGraphResponder(bedGraph));
             }
 
-            DepthWorker worker = new DepthWorker(minimumMapScore, minimumBaseQuality, keepDupes, COVERAGE_HISTOGRAM_MAX, bamFile,
+            DepthWorker worker = new DepthWorker(minimumMapScore, minimumBaseQuality, keepDupes, bamFile,
                     intervals, aggregator);
             executor.execute(worker);
         }
