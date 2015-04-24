@@ -23,6 +23,7 @@ public class CovFastaResponder extends DepthResponder {
     @Override
     public void startRegion(Interval region) {
         output.print(">" + region.getContig() + ":" + region.getStart() + "-" + region.getEnd());
+        regionOffset = 0;
     }
 
     @Override
