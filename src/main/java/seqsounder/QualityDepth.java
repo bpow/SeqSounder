@@ -20,11 +20,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class QualityDepth {
-    private static final int COVERAGE_HISTOGRAM_MAX = 1000;
     private int minimumMapScore = 20;
     private int minimumBaseQuality = 20;
     private boolean keepDupes = false;
-    private boolean compressOutput = true;
     private String bedFile = null;
     private String covFasta = null;
     private String covBedGraph = null;
