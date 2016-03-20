@@ -10,7 +10,10 @@ import htsjdk.tribble.CloseableTribbleIterator;
 import htsjdk.tribble.FeatureReader;
 import htsjdk.tribble.bed.BEDCodec;
 import htsjdk.tribble.bed.BEDFeature;
+import org.irods.jargon.core.connection.IRODSAccount;
+import org.irods.jargon.core.exception.JargonException;
 import seqsounder.depthresponder.*;
+import seqsounder.irods.IrodsQueryUtils;
 
 import java.io.*;
 import java.util.*;
@@ -37,8 +40,12 @@ public class QualityDepth {
     public boolean makeCovBedGraph;
     @Parameter(names={"-s", "-suffix"}, description="Additional suffix to add to output files")
     public String suffix = "";
+    @Parameter(names={"-i", "--irods"}, description="IRODS connection URI")
+    public String irodsUri = "";
     @Parameter(description = "bamFiles")
     public List<String> bamFiles = new ArrayList<String>();
+
+    private IrodsQueryUtils irodsQuery;
 
     private ArrayList<Interval> setupIntervals() throws IOException {
         ArrayList<Interval> inputIntervals;
@@ -146,7 +153,11 @@ public class QualityDepth {
             this.covTabOut = covTabOut;
             this.reportOut = reportOut;
 
-            reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
+            if (irodsQuery != null) {
+                reader = irodsQuery.readerForBam(bamFileName);
+            } else {
+                reader = SamReaderFactory.makeDefault().validationStringency(ValidationStringency.SILENT).open(new File(bamFileName));
+            }
             if (intervalsOfInterest.isEmpty()) {
                 intervalsOfInterest = wholeGenomeIntervalsForBamFile(reader);
             }
@@ -297,6 +308,13 @@ public class QualityDepth {
         if (qd.help) {
             jc.usage();
             System.exit(0);
+        }
+        if (!qd.irodsUri.isEmpty()) {
+            try {
+                qd.irodsQuery = new IrodsQueryUtils(qd.irodsUri);
+            } catch (JargonException e) {
+                e.printStackTrace();
+            }
         }
         if (qd.bamFiles.size() != 1) {
             jc.usage();
