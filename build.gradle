@@ -13,6 +13,7 @@ repositories {
 
 dependencies {
     compile 'org.slf4j:slf4j-api:1.7.13'
+    compile 'org.slf4j:slf4j-nop:1.7.13'
     compile 'com.github.samtools:htsjdk:1.130'
     compile 'org.irods.jargon:jargon-core:3.3.2-RELEASE' // need to use old version while server is old version
     compile 'com.beust:jcommander:1.47'
