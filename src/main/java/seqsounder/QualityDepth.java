@@ -10,10 +10,9 @@ import htsjdk.tribble.CloseableTribbleIterator;
 import htsjdk.tribble.FeatureReader;
 import htsjdk.tribble.bed.BEDCodec;
 import htsjdk.tribble.bed.BEDFeature;
-import org.irods.jargon.core.connection.IRODSAccount;
 import org.irods.jargon.core.exception.JargonException;
 import seqsounder.depthresponder.*;
-import seqsounder.irods.IrodsQueryUtils;
+import seqsounder.irods.NCgenesIrods;
 
 import java.io.*;
 import java.util.*;
@@ -42,10 +41,12 @@ public class QualityDepth {
     public String suffix = "";
     @Parameter(names={"-i", "--irods"}, description="IRODS connection URI")
     public String irodsUri = "";
+    @Parameter(names={"-p", "--password"}, description="Password to access IRODS resources")
+    public String irodsPassword = null;
     @Parameter(description = "bamFiles")
     public List<String> bamFiles = new ArrayList<String>();
 
-    private IrodsQueryUtils irodsQuery;
+    private NCgenesIrods irodsQuery;
 
     private ArrayList<Interval> setupIntervals() throws IOException {
         ArrayList<Interval> inputIntervals;
@@ -311,7 +312,7 @@ public class QualityDepth {
         }
         if (!qd.irodsUri.isEmpty()) {
             try {
-                qd.irodsQuery = new IrodsQueryUtils(qd.irodsUri);
+                qd.irodsQuery = new NCgenesIrods(qd.irodsUri, qd.irodsPassword);
             } catch (JargonException e) {
                 e.printStackTrace();
             }

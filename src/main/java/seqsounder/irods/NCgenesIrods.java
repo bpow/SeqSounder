@@ -17,7 +17,7 @@ import org.irods.jargon.core.utils.IRODSUriUtils;
 import java.net.URI;
 import java.util.*;
 
-public class IrodsQueryUtils {
+public class NCgenesIrods {
     private final IRODSFileSystem fs;
     private final IRODSAccount account;
 
@@ -52,7 +52,8 @@ public class IrodsQueryUtils {
     }
 
     public SamReader readerForBam(String bamFileName) {
-        final String participantID = bamFileName; // FIXME -- handle '.bam' suffix?
+        final String participantID = bamFileName.substring(bamFileName.length()-4).equalsIgnoreCase(".bam") ?
+                bamFileName.substring(0, bamFileName.length()-4) : bamFileName;
         try {
             List<DataObject> bams = irodsAVQuery(pairsToMap(
                     "ParticipantID", participantID, "FileType", "RecalBam"));
@@ -83,9 +84,38 @@ public class IrodsQueryUtils {
         return m;
     }
 
-    public IrodsQueryUtils(String irodsUri) throws JargonException {
+    public static IRODSAccount getIRODSAccountFromURI(URI uri, String password) throws JargonException {
+        if (!"irods".equals(uri.getScheme())) {
+            throw new IllegalArgumentException("incorrect IRODS url scheme");
+        }
+        String userInfo = uri.getUserInfo();
+        String zone = "";
+        String uriPass = null;
+        int lastColon = userInfo.lastIndexOf(':');
+        if (lastColon >= 0) {
+            uriPass = userInfo.substring(lastColon+1);
+            userInfo = userInfo.substring(0, lastColon);
+        }
+        int lastDot = userInfo.lastIndexOf('.');
+        if (lastDot >= 0) {
+            zone = userInfo.substring(lastDot + 1);
+            userInfo = userInfo.substring(0, lastDot); // now actually just username
+        }
+        if (password == null) {
+            password = uriPass;
+        }
+        if (password == null) {
+            password = new String(System.console().readPassword("Password?\n"));
+        }
+        int port = uri.getPort();
+        if (port < 0) { port = 1247; }
+        return IRODSAccount.instance(uri.getHost(), port, userInfo, password, uri.getPath(), zone, "");
+
+    }
+
+    public NCgenesIrods(String irodsUri, String password) throws JargonException {
         fs = new IRODSFileSystem();
-        IRODSAccount tempAccount = IRODSUriUtils.getIRODSAccountFromURI(URI.create(irodsUri));
+        IRODSAccount tempAccount = getIRODSAccountFromURI(URI.create(irodsUri), password);
         account = fs.getIRODSAccessObjectFactory().authenticateIRODSAccount(tempAccount).getAuthenticatedIRODSAccount();
     }
 }
